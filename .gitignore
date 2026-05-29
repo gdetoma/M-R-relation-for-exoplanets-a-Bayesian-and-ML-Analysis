@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+ML-venv/
+.venv/
+venv/
+
+# Generated analysis outputs
+plots/
+*.png
+*.pdf
+*.csv
+
+# Notebooks and temporary files
+.ipynb_checkpoints/
+*.tmp
+*.log
+
+# Local editor/system files
+.DS_Store
+.vscode/
