@@ -250,6 +250,17 @@ def posterior_predictive_curves(samples: np.ndarray, x_grid: np.ndarray, n_draws
     return np.array(draws)
 
 
+def breakpoint_intervals(samples: np.ndarray) -> np.ndarray:
+    """Return 16th, 50th, and 84th percentiles for each breakpoint."""
+    n_segments = MR.n_segments_from_theta(samples[0])
+    n_breakpoints = n_segments - 1
+    if n_breakpoints == 0:
+        return np.empty((3, 0))
+    break_start = 1 + n_segments
+    break_samples = samples[:, break_start : break_start + n_breakpoints]
+    return np.percentile(break_samples, [16, 50, 84], axis=0)
+
+
 def plot_nested_fit(
     df: pd.DataFrame,
     samples: np.ndarray,
@@ -296,9 +307,13 @@ def plot_nested_fit(
     ax.plot(x_grid, mean_q50, color="black", lw=2, label="posterior median")
     ax.plot(x_grid, MR.piecewise_log_radius(best_theta, x_grid), color="C3", lw=2, label="best logL")
 
-    _, _, breakpoints, _ = MR.unpack_theta(best_theta)
-    for breakpoint in breakpoints:
-        ax.axvline(breakpoint, color="0.5", ls=":", lw=1)
+    breakpoint_q16, breakpoint_q50, breakpoint_q84 = breakpoint_intervals(samples)
+    breakpoint_colors = [f"C{i}" for i in range(4, 10)]
+    for i, (q16, q50, q84) in enumerate(zip(breakpoint_q16, breakpoint_q50, breakpoint_q84)):
+        color = breakpoint_colors[i % len(breakpoint_colors)]
+        label = "68% breakpoint interval" if i == 0 else None
+        ax.axvspan(q16, q84, color=color, alpha=0.22, linewidth=0, label=label)
+        ax.axvline(q50, color=color, ls="--", lw=1.4, label=fr"$x_{i + 1}$ median")
 
     ax.set_xlabel(r"$\log_{10}(M/M_\oplus)$")
     ax.set_ylabel(r"$\log_{10}(R/R_\oplus)$")

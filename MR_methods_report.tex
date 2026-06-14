@@ -1,0 +1,858 @@
+\documentclass{article}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{titling}
+
+% BIBLIOGRAPHY
+\usepackage[
+backend=biber,
+style=numeric,
+]{biblatex}
+\addbibresource{references.bib}
+
+% TEXT, EQUATIONS, AND TABLES
+\usepackage[none]{hyphenat}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{microtype}
+\numberwithin{equation}{section}
+\setlength{\parindent}{0pt}
+\sloppy
+
+% FIGURES
+\usepackage{graphicx, wrapfig}
+\usepackage{subcaption}
+\usepackage{caption}
+\graphicspath{{./plots/}{./images/}}
+\captionsetup[figure]{font=footnotesize,labelfont=footnotesize}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Bayesian Statistical Methods and Data Analysis Project Report\\}
+\vspace{0.5cm}
+{\huge\bfseries Comparative Analysis of the Exoplanet Mass--Radius Relation using Bayesian Inference and Machine Learning\\}
+\vspace{0.5 cm}
+Guglielmo De Toma
+\end{center}
+\vspace{5pt}
+
+\begin{abstract}
+\noindent
+This project compares Bayesian and machine-learning methods for modelling the exoplanet mass--radius ($M$--$R$) relation using the DACE catalogue \cite{dace_catalog}. The analysis is performed in logarithmic space, fitting $\log_{10}(R/R_\oplus)$ as a function of $\log_{10}(M/M_\oplus)$. The main Bayesian model is a continuous broken power law with measurement errors in both mass and radius, propagated mass errors, and segment-dependent intrinsic scatter. The baseline two-breakpoint MCMC fit gives slopes $b_1=0.396$, $b_2=0.605$, and $b_3=-0.039$, corresponding to a positive small-planet regime, a steep intermediate regime, and a nearly flat giant-planet regime. Posterior predictive checks show good calibration for this model, with PTE = 0.503 and 0.964 of planets within two total standard deviations. Model comparison gives a nuanced result: BIC favours two breakpoints, WAIC favours more flexible three- and four-breakpoint models, and nested sampling with \texttt{dynesty} gives the highest evidence to four breakpoints, only weakly above three. Gaussian Process regression provides a flexible non-parametric comparison with good uncertainty calibration; the Rational Quadratic kernel gives PTE = 0.520 and test-like residual scatter comparable to the Bayesian models. Random Forest regression achieves competitive held-out predictive accuracy, with test RMSE = 0.1057 dex for the selected smooth model, but its tree-spread uncertainty proxy is strongly under-calibrated, giving PTE = 0.000. Quantile boosting and support vector regression were also tested on a shared held-out split. The SVR gives strong point prediction, with test RMSE = 0.0999 dex, but its validation-calibrated uncertainty remains narrow, with PTE = 0.030; quantile boosting gives test RMSE = 0.1079 dex and under-covers the test scatter. A compact neural network and Bayesian neural network were also tested on a shared held-out split. The deterministic neural network gives test RMSE = 0.0995 dex, while the Bayesian neural network gives test RMSE = 0.1011 dex and better predictive calibration, with PTE = 0.487. Overall, the Bayesian broken-power-law model gives the best balance of physical interpretability and calibrated uncertainty, while the GP and BNN are the strongest flexible probabilistic alternatives.
+\end{abstract}
+
+\section{Introduction}
+
+Since the discovery of the first exoplanet orbiting a Sun-like star in 1995 \cite{mayor1995jupiter}, exoplanet science has rapidly evolved from detection toward physical characterization. More than 5500 exoplanets have now been discovered, revealing a broad diversity of planetary systems and planetary properties. Among the quantities used to characterize exoplanets, planetary mass and radius play a central role because together they constrain bulk density, composition, internal structure, and formation history.
+
+Planetary masses and radii are usually measured through different observational techniques, and many exoplanets have only one of the two quantities available. The mass--radius relation is therefore a crucial statistical tool: it can be used to infer missing planetary properties, classify planets into broad physical populations, and investigate the physics governing planetary interiors and atmospheres.
+
+The exoplanet $M$--$R$ relation is non-linear and intrinsically scattered. Terrestrial planets, Neptune-like planets, and gas giants do not follow a single power law because their radii respond differently to changes in mass. Moreover, observational uncertainty, composition, atmospheric mass fraction, irradiation, age, and evolutionary history all contribute to the observed dispersion. Modelling the relation is therefore both a physical and a statistical problem.
+
+In this work, the mass--radius relation is analysed using several complementary approaches: Bayesian broken-power-law inference, Gaussian Processes (GPs), Random Forests (RFs), quantile boosting, support vector regression (SVR), neural networks (NNs), and Bayesian neural networks (BNNs). Bayesian inference provides an interpretable probabilistic framework with explicit uncertainty propagation. Gaussian Processes offer a flexible non-parametric regression model with predictive uncertainties. Random Forests, boosting, support vector regression, and neural networks provide data-driven machine-learning baselines, while the BNN tests whether a neural-network architecture can recover useful posterior predictive uncertainty. The goal is to compare these methods in terms of fit quality, uncertainty quantification, interpretability, extrapolation behaviour, and consistency with theoretical expectations.
+
+\section{Bayesian Analysis with \texttt{emcee}}
+
+\subsection{Dataset and Preprocessing}
+
+The Bayesian analysis was performed using the DACE exoplanet catalogue \cite{dace_catalog}. Only planets with measured masses, radii, and associated uncertainties were retained. Planetary masses and radii were converted from Jupiter units to Earth units using
+
+\begin{equation}
+M = M_{\mathrm{Jup}} \times 317.8284,
+\end{equation}
+
+\begin{equation}
+R = R_{\mathrm{Jup}} \times 11.2089.
+\end{equation}
+
+The relation was fitted in logarithmic space,
+
+\begin{equation}
+x = \log_{10}\left(\frac{M}{M_\oplus}\right),
+\qquad
+y = \log_{10}\left(\frac{R}{R_\oplus}\right).
+\end{equation}
+
+This transformation is useful because a power law,
+
+\begin{equation}
+R \propto M^\alpha,
+\end{equation}
+
+becomes a linear relation in log-log space. The slope of the line is therefore directly interpretable as the power-law exponent. Measurement uncertainties were propagated into logarithmic space with first-order error propagation:
+
+\begin{equation}
+\sigma_{\log M} =
+\frac{\sigma_M}{M \ln 10},
+\qquad
+\sigma_{\log R} =
+\frac{\sigma_R}{R \ln 10}.
+\end{equation}
+
+No radius or mass cut was applied. This is important because the purpose of the broken-power-law model is precisely to capture the different regimes present in the full exoplanet population.
+
+\subsection{Piecewise-Linear Model}
+
+The model assumes that $\log_{10} R$ is a continuous piecewise-linear function of $\log_{10} M$. For the baseline case with two breakpoints,
+
+\begin{equation}
+f(x)
+=
+a + b_1 x
++
+(b_2-b_1)\max(0,x-x_1)
++
+(b_3-b_2)\max(0,x-x_2),
+\end{equation}
+
+where $a$ is the intercept, $b_i$ are the slopes of the three regimes, and $x_i$ are the breakpoint locations in $\log_{10}(M/M_\oplus)$. The hinge-function formulation enforces continuity while allowing the slope to change between regimes. Because the model is fitted in log-log space, each slope corresponds to
+
+\begin{equation}
+R \propto M^{b_i}.
+\end{equation}
+
+The same implementation was also run with one, three, and four breakpoints in order to test whether additional flexibility was justified by the data.
+
+\subsection{Intrinsic Scatter and Likelihood}
+
+The observed spread in radius at fixed mass is larger than expected from measurement errors alone. To account for this, each segment has its own intrinsic scatter term. For planet $i$, the total variance in the $y$ direction is
+
+\begin{equation}
+\sigma_{\mathrm{tot},i}^2
+=
+\sigma_{y,i}^2
++
+\left[
+\frac{dy}{dx}(x_i)\sigma_{x,i}
+\right]^2
++
+\sigma_{\mathrm{int},s(i)}^2,
+\end{equation}
+
+where $s(i)$ denotes the segment containing the planet. The second term propagates the mass uncertainty into the radius direction using the local slope of the fitted relation. The intrinsic scatter parameters are sampled in logarithmic form,
+
+\begin{equation}
+\sigma_{\mathrm{int},s} = \exp(\log \sigma_{\mathrm{int},s}),
+\end{equation}
+
+which guarantees positivity.
+
+The likelihood is Gaussian in log-radius:
+
+\begin{equation}
+y_i \sim \mathcal{N}\left(f(x_i;\theta),\sigma_{\mathrm{tot},i}^2\right),
+\end{equation}
+
+with log-likelihood
+
+\begin{equation}
+\log \mathcal{L}
+=
+-\frac{1}{2}
+\sum_i
+\left[
+\frac{(y_i-f(x_i;\theta))^2}{\sigma_{\mathrm{tot},i}^2}
++
+\log(2\pi \sigma_{\mathrm{tot},i}^2)
+\right].
+\end{equation}
+
+The logarithmic variance term is essential: it penalizes arbitrarily large scatter values, so the likelihood cannot be improved simply by inflating $\sigma_{\mathrm{int}}$.
+
+\subsection{Priors and Sampling}
+
+Uniform priors were adopted within broad bounds for the intercept, slopes, breakpoints, and intrinsic scatters. The breakpoints were constrained to remain ordered and separated by a minimum distance in $\log_{10}M$, avoiding degenerate solutions in which two segments collapse onto each other.
+
+Before posterior sampling, a maximum a posteriori estimate was obtained with the L-BFGS-B optimizer using multiple deterministic and randomized starting points. The MCMC chains were then initialized around this solution and sampled with the affine-invariant ensemble sampler implemented in \texttt{emcee} \cite{foremanmackey2013emcee}. The posterior distribution is
+
+\begin{equation}
+p(\theta|D) \propto p(D|\theta)p(\theta).
+\end{equation}
+
+After sampling, burn-in and thinning were estimated from the autocorrelation time when possible.
+
+\subsection{Posterior Predictive Checks and Model Comparison}
+
+Posterior predictive checks were used to test whether the fitted model can reproduce the observed scatter. For each posterior draw, replicated data were generated as
+
+\begin{equation}
+y_i^{\mathrm{rep}}
+\sim
+\mathcal{N}\left(f(x_i;\theta),\sigma_{\mathrm{tot},i}^2\right).
+\end{equation}
+
+The test statistic was
+
+\begin{equation}
+\chi^2
+=
+\sum_i
+\frac{(y_i-f(x_i;\theta))^2}{\sigma_{\mathrm{tot},i}^2}.
+\end{equation}
+
+The posterior predictive $p$-value, or probability-to-exceed (PTE), was computed as the fraction of replicated datasets with a larger test statistic than the observed data. Values near 0 or 1 would indicate tension; values closer to the middle of the unit interval indicate that the observed data are typical under the fitted model.
+
+Models with different numbers of breakpoints were compared using BIC and WAIC. The BIC is
+
+\begin{equation}
+\mathrm{BIC}
+=
+k\ln N
+-
+2\log \mathcal{L}_{\mathrm{max}},
+\end{equation}
+
+where $k$ is the number of parameters and $N$ is the number of planets. WAIC was estimated from pointwise log-likelihood values over posterior samples and is used as an estimate of out-of-sample predictive performance.
+
+\subsection{Results}
+
+The baseline two-breakpoint fit used 760 planets. The posterior median breakpoints were
+$x_1 = 0.824^{+0.048}_{-0.005}$ and
+$x_2 = 2.196^{+0.008}_{-0.022}$, corresponding to approximately
+$6.7\,M_\oplus$ and $157\,M_\oplus$. These values separate a small-planet regime, an intermediate regime, and a giant-planet regime.
+
+\begin{table}[H]
+\centering
+\caption{Posterior summary for the baseline two-breakpoint \texttt{emcee} model. Slopes are power-law exponents in $R\propto M^b$. Intrinsic scatters are in dex.}
+\label{tab:emcee-parameters}
+\begin{tabular}{lccc}
+\toprule
+Quantity & Median & $-1\sigma$ & $+1\sigma$ \\
+\midrule
+$b_1$ & 0.396 & 0.026 & 0.030 \\
+$b_2$ & 0.605 & 0.009 & 0.013 \\
+$b_3$ & -0.039 & 0.011 & 0.011 \\
+$x_1$ & 0.824 & 0.005 & 0.048 \\
+$x_2$ & 2.196 & 0.022 & 0.008 \\
+$\sigma_{\mathrm{int},1}$ & 0.071 & 0.008 & 0.009 \\
+$\sigma_{\mathrm{int},2}$ & 0.120 & 0.006 & 0.006 \\
+$\sigma_{\mathrm{int},3}$ & 0.072 & 0.003 & 0.003 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:emcee-fit} shows the fitted relation. The blue bands represent uncertainty in the mean relation, while the green bands show the posterior predictive spread including intrinsic scatter. The coloured vertical bars mark the central 68\% posterior intervals for the breakpoint locations, with dashed coloured lines at the posterior medians. This distinction is important: many observed planets are expected to lie outside the narrow mean-relation credible band, but they should be better described by the wider predictive band.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{emcee_mass_radius_fit}
+\caption{Bayesian fit of $\log_{10}(R/R_\oplus)$ as a function of $\log_{10}(M/M_\oplus)$ for the two-breakpoint model. The posterior median and MAP relation are shown together with credible bands for the mean relation, predictive bands including intrinsic scatter, and coloured 68\% breakpoint intervals.}
+\label{fig:emcee-fit}
+\end{figure}
+
+The three slopes have clear physical interpretations. The first segment has a positive exponent compatible with rocky and super-Earth planets. The intermediate segment is steeper, reflecting the rapid increase in radius associated with volatile-rich planets. The final slope is close to zero, consistent with the weak mass dependence of gas-giant radii over a broad mass range.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{emcee_mass_radius_trace}
+\caption{Trace plot.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{emcee_mass_radius_corner}
+\caption{Corner plot.}
+\end{subfigure}
+\caption{MCMC diagnostics for the baseline \texttt{emcee} model. The trace plot checks chain stability, while the corner plot shows posterior correlations between slopes, breakpoints, and intrinsic scatters.}
+\label{fig:emcee-diagnostics}
+\end{figure}
+
+The posterior predictive check gives a PTE of 0.503 for the final two-breakpoint run. In addition, the MAP residual coverage test finds that 529 out of 760 planets, or 0.696 of the sample, lie within one total standard deviation of the fitted line, and 733 out of 760 planets, or 0.964, lie within two total standard deviations. These numbers are close to the Gaussian expectations of about 0.68 and 0.95, indicating that the combination of measurement errors, propagated mass errors, and intrinsic scatter is reasonably calibrated.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\linewidth]{emcee_mass_radius_ppd_pte}
+\caption{Posterior predictive check for the baseline two-breakpoint model. The histogram shows the difference between replicated and observed chi-square statistics; the vertical line marks zero. The corresponding PTE is 0.503.}
+\label{fig:emcee-ppd}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Model comparison for \texttt{emcee} fits with different numbers of breakpoints. Lower BIC and WAIC are preferred.}
+\label{tab:emcee-model-comparison}
+\begin{tabular}{ccccccc}
+\toprule
+Breakpoints & BIC & $\Delta$BIC & WAIC & $\Delta$WAIC & PTE & $f_{2\sigma}$ \\
+\midrule
+1 & -1419.19 & 35.10 & -1447.13 & 65.76 & 0.557 & 0.961 \\
+2 & -1454.29 & 0.00 & -1494.35 & 18.54 & 0.553 & 0.958 \\
+3 & -1453.63 & 0.66 & -1511.90 & 0.99 & 0.577 & 0.954 \\
+4 & -1440.69 & 13.60 & -1512.89 & 0.00 & 0.427 & 0.963 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model-comparison statistics do not point to a single conclusion in a completely model-independent way. BIC strongly penalizes additional parameters and favours the two-breakpoint model, with the three-breakpoint model very close behind. WAIC instead prefers the four-breakpoint model, with the three-breakpoint model nearly indistinguishable. The posterior predictive PTE values are acceptable for all models. Since the two-breakpoint model captures the intended three broad planetary regimes while remaining parsimonious and physically interpretable, it is adopted as the baseline Bayesian model for comparison with the Gaussian Process and Random Forest approaches.
+
+\subsection{Discussion}
+
+The \texttt{emcee} analysis provides a physically interpretable probabilistic description of the mass--radius relation. Its main strength is that the model parameters map directly onto planetary-regime slopes, breakpoints, and intrinsic scatters. The likelihood also treats radius errors, propagated mass errors, and astrophysical scatter in a single coherent variance model.
+
+The main limitation is that the functional form must be chosen in advance. A piecewise-linear relation is useful for identifying broad regimes, but it cannot capture every localized feature of the data. Increasing the number of breakpoints improves flexibility, as reflected by WAIC, but at the cost of interpretability and higher posterior dimension. This motivates the comparison with Gaussian Processes and Random Forests, which are more flexible but less directly tied to simple physical scaling laws.
+
+\section{Nested Sampling with \texttt{dynesty}}
+
+\subsection{Motivation}
+
+The \texttt{emcee} analysis samples the posterior distribution for a chosen model, while BIC and WAIC are then used as approximate model-comparison statistics. Nested sampling provides a complementary Bayesian approach because it estimates the marginal likelihood, or evidence, directly. For model $\mathcal{M}$, the evidence is
+
+\begin{equation}
+Z_{\mathcal{M}}
+=
+p(D|\mathcal{M})
+=
+\int
+\mathcal{L}(\theta)\pi(\theta)\,d\theta,
+\end{equation}
+
+where $\mathcal{L}(\theta)$ is the likelihood and $\pi(\theta)$ is the prior. The evidence rewards models that fit the data well over a substantial region of prior volume and penalizes models whose good fits occupy only a very small part of parameter space. Two models can therefore be compared through the Bayes factor,
+
+\begin{equation}
+\log B_{12}
+=
+\log Z_1 - \log Z_2.
+\end{equation}
+
+This is particularly useful for the mass--radius problem because changing the number of breakpoints changes both the goodness of fit and the effective prior volume.
+
+\subsection{Implementation}
+
+The nested-sampling analysis used the same cleaned DACE dataset, the same log-radius model, and the same total variance model as the \texttt{emcee} analysis. The likelihood remained
+
+\begin{equation}
+\log \mathcal{L}
+=
+-\frac{1}{2}
+\sum_i
+\left[
+\frac{(y_i-f(x_i;\theta))^2}{\sigma_{\mathrm{tot},i}^2}
++
+\log(2\pi \sigma_{\mathrm{tot},i}^2)
+\right].
+\end{equation}
+
+The calculation was performed with \texttt{dynesty} \cite{speagle2020dynesty}. The unit-cube prior transform maps the intercept, slopes, and logarithmic intrinsic scatters to the same broad prior ranges used in the MCMC analysis. Breakpoints are drawn as ordered positions between the 5th and 95th percentiles of the observed log-mass distribution, with a minimum spacing imposed to avoid exactly degenerate segments.
+
+The evidence comparison shown here used the broad prior, 200 live points, the \texttt{rwalk} sampling method, the \texttt{multi} bounding method, and a target stopping criterion of $\Delta\log Z = 0.5$. These settings are sufficient for a stable project-level comparison, although a final publication-quality evidence calculation should be repeated with larger \texttt{nlive} and a stricter stopping criterion.
+
+\subsection{Evidence Comparison}
+
+Table~\ref{tab:dynesty-evidence} summarizes the nested-sampling evidence comparison. In this run, the four-breakpoint model has the largest evidence. The three-breakpoint model is close behind, with $\Delta\log Z=-1.11$ relative to the best model, which is comparable to the numerical evidence uncertainties. The two-breakpoint model is moderately disfavoured by evidence relative to the four-breakpoint model, while the one-breakpoint model is strongly disfavoured.
+
+\begin{table}[H]
+\centering
+\caption{Nested-sampling model comparison with \texttt{dynesty}. The table uses the broad prior. $\Delta\log Z$ is measured relative to the highest-evidence model.}
+\label{tab:dynesty-evidence}
+\begin{tabular}{cccccc}
+\toprule
+Breakpoints & $\log Z$ & $\sigma_{\log Z}$ & $\Delta\log Z$ & PTE & $f_{2\sigma}$ \\
+\midrule
+1 & 699.13 & 0.60 & -23.34 & 0.542 & 0.955 \\
+2 & 719.25 & 0.69 & -3.22 & 0.569 & 0.959 \\
+3 & 721.36 & 0.74 & -1.11 & 0.522 & 0.957 \\
+4 & 722.47 & 0.67 & 0.00 & 0.558 & 0.961 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The evidence result should be interpreted together with the shape of the posterior fit. Figure~\ref{fig:dynesty-fits} compares the three- and four-breakpoint nested-sampling fits, including coloured vertical bars for the central 68\% posterior intervals of each breakpoint and dashed coloured lines for the posterior medians. The four-breakpoint model has slightly larger evidence, but it introduces an additional narrow transition region. This additional flexibility improves the integrated Bayesian fit only mildly relative to the three-breakpoint model.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{dynesty_mass_radius_3_breakpoints_broad_fit}
+\caption{Three breakpoints.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{dynesty_mass_radius_4_breakpoints_broad_fit}
+\caption{Four breakpoints.}
+\end{subfigure}
+\caption{Nested-sampling fits for the two highest-evidence models. Bands are defined as in the \texttt{emcee} fit: blue bands describe the posterior uncertainty in the mean relation, green bands describe the intrinsic posterior predictive spread, and coloured vertical bars show the central 68\% breakpoint intervals.}
+\label{fig:dynesty-fits}
+\end{figure}
+
+\subsection{Discussion}
+
+Nested sampling and the MCMC information criteria answer related but not identical questions. The \texttt{emcee} comparison showed that BIC favours two breakpoints because BIC imposes a strong penalty on additional parameters. WAIC, which is more focused on predictive accuracy, preferred the more flexible three- and four-breakpoint models. The evidence from \texttt{dynesty} is closer in spirit to the full Bayesian model comparison: it integrates over the prior volume and therefore automatically includes an Occam penalty.
+
+The nested-sampling result favours additional flexibility, but the evidence separation between three and four breakpoints is weak. Therefore, the main conclusion is not that the four-breakpoint model is uniquely required. Rather, the data clearly reject a single-break model, support multiple planetary regimes, and leave some ambiguity between a parsimonious physically interpretable model and a slightly more flexible statistical description.
+
+\section{Gaussian Process Regression}
+
+\subsection{Motivation}
+
+The broken-power-law models impose a specific functional form on the mass--radius relation. This makes the inferred slopes and breakpoints physically interpretable, but it also restricts the shape of the relation. Gaussian Process (GP) regression provides a complementary non-parametric approach: instead of choosing a fixed number of regimes, the function itself is treated as a random draw from a distribution over smooth functions \cite{rasmussen2006gaussian}.
+
+In log-log space, the model can be written as
+
+\begin{equation}
+y(x) = f(x) + \epsilon,
+\end{equation}
+
+where
+
+\begin{equation}
+f(x) \sim \mathcal{GP}\left(m(x), k(x,x')\right).
+\end{equation}
+
+Here $m(x)$ is the mean function and $k(x,x')$ is the covariance kernel. The kernel controls the smoothness and characteristic scale of variations in the mass--radius relation. Unlike the piecewise-linear model, the GP does not directly return planetary-regime slopes, but it can reveal whether the data prefer a smooth non-linear relation.
+
+\subsection{Uncertainty Model}
+
+The GP analysis was performed with \texttt{scikit-learn} \cite{pedregosa2011scikit}. The target variable was again
+
+\begin{equation}
+y = \log_{10}\left(\frac{R}{R_\oplus}\right),
+\end{equation}
+
+as a function of
+
+\begin{equation}
+x = \log_{10}\left(\frac{M}{M_\oplus}\right).
+\end{equation}
+
+The measured radius uncertainty was included as a heteroscedastic noise term. The mass uncertainty was propagated into the radius direction using the local derivative of the GP mean. Since the derivative is not known before the GP is fitted, the code first initializes the slope using a linear fit and then iteratively refits the GP after updating the propagated mass-error term:
+
+\begin{equation}
+\sigma_{\mathrm{obs},i}^2
+=
+\sigma_{y,i}^2
++
+\left[
+\frac{d\mu_{\mathrm{GP}}}{dx}(x_i)\sigma_{x,i}
+\right]^2.
+\end{equation}
+
+In addition, the kernel includes a white-noise term,
+
+\begin{equation}
+k(x,x')
+=
+k_{\mathrm{smooth}}(x,x')
++
+\sigma_{\mathrm{white}}^2 \delta_{x,x'},
+\end{equation}
+
+which acts as a global intrinsic-scatter parameter. This differs from the Bayesian broken-power-law model, where the intrinsic scatter is allowed to vary by segment.
+
+\subsection{Kernel Comparison}
+
+Four covariance kernels were tested: Radial Basis Function (RBF), Matern $3/2$, Matern $5/2$, and Rational Quadratic (RQ). Hyperparameters were optimized by maximizing the GP log marginal likelihood,
+
+\begin{equation}
+\log p(y|X,\theta_{\mathrm{GP}})
+=
+-\frac{1}{2}(y-m)^T K^{-1}(y-m)
+-\frac{1}{2}\log |K|
+-\frac{N}{2}\log(2\pi),
+\end{equation}
+
+where $K$ includes the smooth kernel, the white-noise term, and the heteroscedastic observational variances. This is an empirical-Bayes procedure: the predictive uncertainties are conditional on the optimized hyperparameters rather than marginalized over a full hyperparameter posterior.
+
+\begin{table}[H]
+\centering
+\caption{Gaussian Process kernel comparison. Larger log marginal likelihood is preferred, while lower BIC is preferred.}
+\label{tab:gp-model-comparison}
+\begin{tabular}{lcccccc}
+\toprule
+Kernel & $\log p(y|X)$ & $\Delta\log p$ & BIC & PTE & $f_{2\sigma}$ & $\sigma_{\mathrm{white}}$ \\
+\midrule
+RQ & 704.15 & 0.00 & -1375.13 & 0.520 & 0.957 & 0.088 \\
+Matern $5/2$ & 703.79 & -0.36 & -1381.04 & 0.552 & 0.957 & 0.088 \\
+RBF & 703.31 & -0.84 & -1380.09 & 0.514 & 0.958 & 0.088 \\
+Matern $3/2$ & 701.85 & -2.30 & -1377.17 & 0.592 & 0.959 & 0.089 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Rational Quadratic kernel gives the highest log marginal likelihood, while the Matern $5/2$ kernel gives the lowest BIC because it uses one fewer optimized kernel parameter. The differences are small: all kernels have similar posterior predictive PTE values, similar residual coverage, and nearly identical inferred white-noise scatter of about $0.088$ dex. This suggests that the broad conclusions are not very sensitive to the precise smooth kernel choice.
+
+\subsection{Results}
+
+The best log-marginal-likelihood model is the Rational Quadratic GP, with optimized kernel
+
+\begin{equation}
+k(x,x')
+=
+0.643^2\,k_{\mathrm{RQ}}(\alpha=0.914,\ell=1.81)
++
+\sigma_{\mathrm{white}}^2,
+\end{equation}
+
+where $\sigma_{\mathrm{white}}=0.088$ dex. The full-sample residual metrics are $\mathrm{RMSE}=0.094$ dex and $R^2=0.936$. The residual coverage is also well calibrated: 0.721 of the planets are within one total standard deviation, and 0.957 are within two total standard deviations.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.90\linewidth]{gp_mass_radius_rq_fit}
+\caption{Gaussian Process fit using the Rational Quadratic kernel. The black line is the GP mean and the blue bands are the GP predictive bands. The model follows the smooth global structure of the mass--radius relation without imposing explicit breakpoints.}
+\label{fig:gp-fit}
+\end{figure}
+
+The posterior predictive check for the Rational Quadratic GP gives PTE = 0.520, shown in Figure~\ref{fig:gp-ppd}. This value is close to 0.5 and therefore indicates that the GP predictive distribution reproduces the overall scatter of the observed data well.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.76\linewidth]{gp_mass_radius_rq_ppd_pte}
+\caption{Posterior predictive check for the Rational Quadratic Gaussian Process model. The PTE value is 0.520.}
+\label{fig:gp-ppd}
+\end{figure}
+
+\subsection{Discussion}
+
+The GP model provides a useful non-parametric comparison to the Bayesian broken-power-law model. It captures the global curvature of the mass--radius relation without specifying the number or position of planetary regimes. Its predictive calibration is good, and its inferred global scatter is comparable to the intrinsic scatters inferred in the parametric Bayesian models.
+
+The main disadvantage is interpretability. The GP does not directly identify physically meaningful slopes for terrestrial, intermediate, and giant planets. Its extrapolation behaviour is also less physically motivated: away from the data, the GP prediction tends to revert toward the learned mean structure according to the chosen kernel. Therefore, the GP is valuable as a flexible regression and uncertainty-quantification tool, but the broken-power-law model remains more directly connected to planetary-structure interpretation.
+
+\section{Random Forest Regression}
+
+\subsection{Motivation}
+
+Random Forests are ensemble machine-learning models based on many decision trees trained on bootstrap samples of the data \cite{breiman2001random}. They are attractive as a predictive baseline because they can learn non-linear structure without assuming a parametric functional form. In this project, the Random Forest is used to fit
+
+\begin{equation}
+\log_{10}\left(\frac{R}{R_\oplus}\right)
+=
+f\left[
+\log_{10}\left(\frac{M}{M_\oplus}\right)
+\right].
+\end{equation}
+
+Unlike the Bayesian and GP methods, the Random Forest does not naturally provide a probabilistic posterior distribution. Therefore, the standard deviation of predictions across individual trees was used as a practical uncertainty proxy. This should be interpreted cautiously: tree-to-tree scatter is an ensemble-dispersion measure, not a full Bayesian predictive uncertainty.
+
+\subsection{Training and Hyperparameter Selection}
+
+The cleaned dataset was split into a training set and a held-out test set. With a test fraction of 0.25, the Random Forest was trained on 570 planets and evaluated on 190 test planets. The training used inverse-variance sample weights based on the measured log-radius uncertainty, with a small error floor to avoid giving extreme weight to a few very precise measurements.
+
+Several smoothness settings were compared. The main hyperparameters were the tree depth, the minimum number of samples per leaf, and the bootstrap fraction used for each tree. The objective was held-out test RMSE in log-radius space:
+
+\begin{equation}
+\mathrm{RMSE}
+=
+\sqrt{
+\frac{1}{N_{\mathrm{test}}}
+\sum_i
+\left(y_i-\hat{y}_i\right)^2
+}.
+\end{equation}
+
+The model with the absolute best test RMSE was not automatically adopted, because deeper forests can produce visually jagged fits and overfit local fluctuations. Instead, the final run used a one-standard-error selection rule: first identify the best test RMSE, then choose the smoothest model whose test RMSE is statistically consistent with that best value.
+
+\begin{table}[H]
+\centering
+\caption{Selected Random Forest hyperparameter comparison. The final model is chosen by the one-standard-error rule, not by the absolute minimum RMSE.}
+\label{tab:rf-model-comparison}
+\begin{tabular}{lccccc}
+\toprule
+Model & Depth & Min. leaf & Max samples & Test RMSE & Selected \\
+\midrule
+medium full & 5 & 12 & 1.0 & 0.1021 & no \\
+medium & 5 & 12 & 0.8 & 0.1023 & no \\
+balanced & 6 & 8 & 0.8 & 0.1024 & no \\
+deeper & 8 & 6 & 0.8 & 0.1039 & no \\
+smooth leaf 18 & 4 & 18 & 0.7 & 0.1057 & yes \\
+ultra smooth & 2 & 40 & 0.6 & 0.1266 & no \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The absolute best RMSE was obtained by the \texttt{medium\_full} model, with test RMSE = 0.1021 dex. The selected smoother model was \texttt{smooth\_leaf18}, with max depth 4, minimum leaf size 18, and max samples 0.7. Its test RMSE was 0.1057 dex, still within the one-standard-error threshold of the best model.
+
+\subsection{Uncertainty Proxy and Predictive Checks}
+
+For a fitted forest with $T$ trees, the mean prediction is
+
+\begin{equation}
+\hat{y}(x)
+=
+\frac{1}{T}
+\sum_{t=1}^{T}
+\hat{y}_t(x),
+\end{equation}
+
+and the tree-spread proxy is
+
+\begin{equation}
+\sigma_{\mathrm{tree}}^2(x)
+=
+\frac{1}{T-1}
+\sum_{t=1}^{T}
+\left[\hat{y}_t(x)-\hat{y}(x)\right]^2.
+\end{equation}
+
+The total variance used for residual coverage and the approximate predictive check was
+
+\begin{equation}
+\sigma_{\mathrm{tot},i}^2
+=
+\sigma_{\mathrm{tree},i}^2
++
+\sigma_{y,i}^2
++
+\sigma_{\mathrm{prop},i}^2,
+\end{equation}
+
+where $\sigma_{\mathrm{prop},i}$ is the finite-difference propagation of the measured mass uncertainty through the Random Forest mean prediction.
+
+Figure~\ref{fig:rf-fit} shows the selected Random Forest fit. The training data are shown in grey and the held-out test data in red. The final curve is smoother than the more flexible forests, but it still has the piecewise-constant character typical of tree-based regression.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.90\linewidth]{rf_mass_radius_best_fit}
+\caption{Random Forest fit for the selected \texttt{smooth\_leaf18} model. The black curve is the mean prediction across trees and the blue bands show the tree-spread uncertainty proxy.}
+\label{fig:rf-fit}
+\end{figure}
+
+The selected model gives train RMSE = 0.0936 dex and test RMSE = 0.1057 dex, with test $R^2=0.921$. This indicates good predictive performance on held-out data. However, the uncertainty calibration is poor: the predictive check gives PTE = 0.000, and only 0.332 of test planets lie within one total standard deviation while 0.574 lie within two total standard deviations.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.76\linewidth]{rf_mass_radius_best_ppd_pte}
+\caption{Approximate predictive check for the selected Random Forest model. The PTE value is 0.000, showing that the tree-spread uncertainty proxy is too narrow to reproduce the observed test-set scatter.}
+\label{fig:rf-ppd}
+\end{figure}
+
+\subsection{Discussion}
+
+The Random Forest is useful as a predictive machine-learning baseline. It achieves a held-out RMSE comparable to the GP and Bayesian models, and the train-test split makes overfitting visible. The hyperparameter scan also shows the expected bias-variance tradeoff: very shallow forests underfit, while deeper forests reduce training error but can produce a less physically plausible, locally jagged relation.
+
+The main weakness is uncertainty quantification. The tree-spread band is not a calibrated predictive interval for this problem. Individual trees in a Random Forest are correlated because they are trained on overlapping bootstrap samples and the same one-dimensional predictor. As a result, the tree-to-tree dispersion substantially underestimates the astrophysical scatter in radius at fixed mass. Therefore, Random Forests are useful for empirical prediction, but they are less suitable than the Bayesian and GP approaches when calibrated uncertainty estimates and physical interpretation are central goals.
+
+\section{Quantile Boosting and Support Vector Regression}
+
+\subsection{Motivation}
+
+Quantile boosting and support vector regression provide two additional machine-learning comparisons. Both are flexible enough to capture a non-linear mass--radius relation, but they make different compromises. Quantile boosting estimates conditional quantiles directly, so it can produce empirical prediction intervals without assuming a Gaussian likelihood. Support vector regression instead gives a smooth point prediction controlled by a margin parameter and an RBF kernel \cite{smola2004tutorial}. It is useful as a strong deterministic regression baseline, but it does not naturally provide a posterior predictive distribution.
+
+\subsection{Quantile Boosting}
+
+The quantile-boosting model was implemented with gradient-boosted decision trees \cite{friedman2001greedy}. For a target quantile level $\alpha$, the model minimizes the pinball loss
+
+\begin{equation}
+\rho_\alpha(r)
+=
+\begin{cases}
+\alpha r, & r \geq 0, \\
+(\alpha-1)r, & r < 0,
+\end{cases}
+\end{equation}
+
+where $r=y-f_\alpha(x)$. Separate boosted models were fitted for $\alpha=0.025$, $0.16$, $0.50$, $0.84$, and $0.975$. The median model, $f_{0.50}(x)$, was used as the point prediction, while the other quantiles defined empirical 68\% and 95\% predictive bands.
+
+The cleaned data were split into 456 training planets, 114 validation planets, and 190 held-out test planets. A small smoothness grid was compared on the validation set. The selected model used 350 boosting stages, learning rate 0.030, tree depth 2, minimum leaf size 16, and subsample fraction 0.85.
+
+\subsection{Support Vector Regression}
+
+The SVR model used an RBF kernel,
+
+\begin{equation}
+K(x,x')
+=
+\exp\left[-\gamma(x-x')^2\right],
+\end{equation}
+
+and the standard $\epsilon$-insensitive regression loss. The hyperparameters $C$, $\gamma$, and $\epsilon$ were selected by validation RMSE. The best validation model used $C=100$, $\gamma=0.35$, and $\epsilon=0.03$, with 323 support vectors.
+
+Because SVR is not probabilistic, its uncertainty was calibrated using the validation residual scatter. The selected model had validation residual scatter $\sigma_{\mathrm{SVR}}=0.0850$ dex. For residual coverage and the approximate predictive check, the total variance was
+
+\begin{equation}
+\sigma_{\mathrm{tot},i}^2
+=
+\sigma_{\mathrm{model},i}^2
++
+\sigma_{y,i}^2
++
+\sigma_{\mathrm{prop},i}^2,
+\end{equation}
+
+where $\sigma_{\mathrm{model}}$ is either the quantile-derived scatter for boosting or the validation residual scatter for SVR, and $\sigma_{\mathrm{prop}}$ is the finite-difference propagation of the measured mass uncertainty through the fitted mean relation.
+
+\subsection{Results}
+
+Table~\ref{tab:qboost-svr-results} summarizes the held-out performance. SVR gives the stronger point prediction, with test RMSE = 0.0999 dex and test $R^2=0.930$. Quantile boosting gives test RMSE = 0.1079 dex and test $R^2=0.918$.
+
+\begin{table}[H]
+\centering
+\caption{Quantile-boosting and support-vector-regression performance on the shared held-out split. RMSE and MAE are in dex in $\log_{10}R$.}
+\label{tab:qboost-svr-results}
+\begin{tabular}{lccccc}
+\toprule
+Method & Val. RMSE & Test RMSE & Test MAE & PTE & $f_{2\sigma}$ \\
+\midrule
+Support Vector Regression & 0.0850 & 0.0999 & 0.0797 & 0.030 & 0.947 \\
+Quantile Boosting & 0.0921 & 0.1079 & 0.0852 & 0.000 & 0.889 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The quantile intervals are informative but under-calibrated in this run. The direct 68\% quantile band contains 0.579 of the test planets, and the direct 95\% quantile band contains 0.884. This is better than using no uncertainty model, but it is still narrower than expected for a calibrated predictive interval.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.90\linewidth]{qboost_svr_mass_radius_fit}
+\caption{Quantile-boosting and support-vector-regression fits. Quantile boosting shows the median relation and empirical 68\% and 95\% predictive bands. SVR shows the RBF-kernel mean relation with a validation-residual scatter band.}
+\label{fig:qboost-svr-fit}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\linewidth]{qboost_svr_mass_radius_predicted_vs_observed}
+\caption{Held-out predicted-versus-observed comparison for quantile boosting and support vector regression. Error bars show the model uncertainty proxy used for each method.}
+\label{fig:qboost-svr-predicted}
+\end{figure}
+
+\subsection{Discussion}
+
+The SVR result shows that a smooth kernel method can achieve point-prediction accuracy comparable to the GP and neural-network models. However, the uncertainty model is only a validation-residual calibration, not a posterior or conditional predictive distribution. Its low PTE of 0.030 indicates that the resulting predictive scatter is still somewhat too narrow for the observed test residuals.
+
+Quantile boosting is attractive because it estimates predictive intervals directly, but in this one-dimensional dataset the independent quantile models still under-cover the held-out data. The method is also less smooth and less physically interpretable than the GP, SVR, or broken-power-law model. It is therefore useful as an empirical interval-learning baseline, but it does not outperform the GP or BNN for calibrated uncertainty quantification.
+
+\section{Neural Networks and Bayesian Neural Networks}
+
+\subsection{Motivation}
+
+Neural networks provide another flexible machine-learning approach to the mass--radius relation. In principle, a multilayer perceptron can approximate a wide range of non-linear functions without specifying breakpoints or a covariance kernel. However, the present problem has only one predictor and 760 cleaned planets, so a large network would be poorly motivated and prone to learning small-scale noise rather than the global planetary-regime structure.
+
+For this reason, the neural-network analysis used a deliberately compact architecture,
+
+\begin{equation}
+\log_{10} M
+\rightarrow
+24
+\rightarrow
+24
+\rightarrow
+\log_{10} R,
+\end{equation}
+
+with hyperbolic-tangent activations. The same architecture was used for both the deterministic neural network and the Bayesian neural network, so that the comparison isolates the effect of Bayesian weight uncertainty rather than changing model capacity.
+
+\subsection{Deterministic Neural Network}
+
+The deterministic network predicts a mean relation $\hat{y}=f_\phi(x)$, where $\phi$ denotes the fitted weights and biases. Training minimized a Gaussian negative log likelihood using the measured radius errors and a learned global intrinsic-scatter parameter,
+
+\begin{equation}
+\sigma_{\mathrm{train},i}^2
+=
+\sigma_{y,i}^2
++
+\sigma_{\mathrm{int}}^2.
+\end{equation}
+
+The intrinsic scatter is constrained to be positive through a softplus transformation. For evaluation on the held-out test set, the measured mass uncertainty was propagated through the local neural-network slope using a finite difference, giving
+
+\begin{equation}
+\sigma_{\mathrm{tot},i}^2
+=
+\sigma_{\mathrm{model},i}^2
++
+\sigma_{y,i}^2
++
+\left[
+\frac{d f_\phi}{dx}(x_i)\sigma_{x,i}
+\right]^2.
+\end{equation}
+
+For the deterministic network, $\sigma_{\mathrm{model}}$ is the learned intrinsic scatter. This makes the uncertainty model intentionally simple: the network is used mainly as a smooth predictive baseline, while the scalar scatter term accounts for the broad astrophysical dispersion around the mean relation.
+
+\subsection{Bayesian Neural Network}
+
+The Bayesian neural network uses the same two-hidden-layer architecture, but each weight and bias is represented by a diagonal Gaussian variational posterior,
+
+\begin{equation}
+q(w_j)
+=
+\mathcal{N}(\mu_j,\sigma_j^2),
+\end{equation}
+
+with a zero-centred Gaussian prior. The optimization objective is a variational evidence lower bound written as a loss,
+
+\begin{equation}
+\mathcal{L}_{\mathrm{BNN}}
+=
+\mathbb{E}_{q(w)}
+\left[
+-\log p(y|x,w)
+\right]
++
+\lambda_{\mathrm{KL}}
+\mathrm{KL}\left[q(w)\,\|\,p(w)\right].
+\end{equation}
+
+The implementation used the reparameterization $w_j=\mu_j+\sigma_j\epsilon_j$, with $\epsilon_j\sim\mathcal{N}(0,1)$, and a tempered KL weight $\lambda_{\mathrm{KL}}=0.10$. This tempering is a pragmatic choice for a small one-dimensional dataset and a diagonal variational family: it prevents the posterior from being over-regularized toward the prior while still penalizing unnecessarily complex functions.
+
+The BNN predictive mean and epistemic uncertainty were estimated from 300 posterior weight samples. The total test-set uncertainty combines the posterior predictive spread, learned intrinsic scatter, radius measurement error, and propagated mass error. In contrast to the Random Forest tree-spread proxy, the BNN uncertainty is tied to an explicit approximate posterior over model parameters.
+
+\subsection{Training and Results}
+
+The cleaned sample was split into 456 training planets, 114 validation planets, and 190 held-out test planets. The validation set was used for early stopping for both networks. Table~\ref{tab:nn-bnn-results} summarizes the predictive performance.
+
+\begin{table}[H]
+\centering
+\caption{Neural-network and Bayesian-neural-network performance on the shared held-out split. RMSE and MAE are in dex in $\log_{10}R$.}
+\label{tab:nn-bnn-results}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Train RMSE & Val. RMSE & Test RMSE & Test MAE & PTE & $f_{2\sigma}$ \\
+\midrule
+Neural Network & 0.0946 & 0.0854 & 0.0995 & 0.0796 & 0.261 & 0.958 \\
+Bayesian Neural Network & 0.0964 & 0.0837 & 0.1011 & 0.0815 & 0.487 & 0.958 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The deterministic neural network gives the lowest held-out RMSE of the two neural-network methods, with test RMSE = 0.0995 dex and test $R^2=0.930$. The Bayesian neural network has a slightly larger test RMSE of 0.1011 dex and test $R^2=0.928$, but its predictive check is better calibrated, with PTE = 0.487 compared with PTE = 0.261 for the deterministic network. Both methods recover a two-sigma residual coverage of 0.958, close to the Gaussian expectation. Figure~\ref{fig:nn-bnn-fit} shows the corresponding mass--radius curves and uncertainty bands.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.90\linewidth]{nn_bnn_mass_radius_fit}
+\caption{Neural-network and Bayesian-neural-network fits to the mass--radius relation. Training planets are shown in grey and held-out test planets in black. The deterministic neural network gives a smooth mean curve with a global intrinsic-scatter band, while the Bayesian neural network adds posterior weight uncertainty to the model band.}
+\label{fig:nn-bnn-fit}
+\end{figure}
+
+Figure~\ref{fig:nn-bnn-diagnostics} shows the training curves and the held-out predicted-versus-observed comparison. The validation loss remains close to the training loss, which supports the choice of a compact architecture rather than a larger network.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{nn_bnn_mass_radius_training_history}
+\caption{Training history.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\linewidth}
+\centering
+\includegraphics[width=\linewidth]{nn_bnn_mass_radius_predicted_vs_observed}
+\caption{Held-out predictions.}
+\end{subfigure}
+\caption{Neural-network diagnostics. The training history shows the early-stopping behaviour, while the predicted-versus-observed plot compares the two neural-network methods on the same held-out planets.}
+\label{fig:nn-bnn-diagnostics}
+\end{figure}
+
+\subsection{Discussion}
+
+The neural-network results are competitive with the GP and Random Forest held-out errors, but their scientific interpretation differs. The deterministic neural network is a useful smooth prediction tool, and the compact architecture avoids the most obvious overfitting risk for a 760-point one-dimensional regression problem. It does not, however, provide parameter-level physical interpretation comparable to the broken-power-law slopes and breakpoints.
+
+The Bayesian neural network trades a small amount of point-prediction accuracy for better predictive calibration. Its PTE is much closer to a typical value than the Random Forest PTE, and its uncertainty estimate has a clearer probabilistic interpretation. Nevertheless, the BNN remains less interpretable than the broken-power-law model and less analytically transparent than the GP. It is therefore best viewed as a flexible probabilistic machine-learning comparison rather than as the primary physical model for planetary regimes.
+
+\section{Conclusion}
+
+This work compared several statistical approaches to the exoplanet mass--radius relation using the same cleaned DACE sample of 760 planets. All methods were fitted in log-log space, so the relation was modelled as $\log_{10}R=f(\log_{10}M)$. This choice makes the Bayesian slopes directly interpretable as power-law exponents and also gives the machine-learning methods a stable one-dimensional regression problem.
+
+The Bayesian broken-power-law model provides the clearest physical interpretation. In the baseline two-breakpoint MCMC fit, the inferred breakpoints are near $6.7\,M_\oplus$ and $157\,M_\oplus$, separating small planets, intermediate planets, and giant planets. The corresponding slopes are approximately $0.40$, $0.61$, and $-0.04$. The first regime is broadly consistent with a rocky-planet scaling, the second reflects the rapid radius growth of volatile-rich planets, and the third is consistent with the weak mass-radius dependence of gas giants. Including intrinsic scatter is essential: measurement errors alone cannot explain the observed spread in radius at fixed mass.
+
+The model-comparison results show that the preferred number of breakpoints depends on the criterion. BIC favours the two-breakpoint model because it strongly penalizes additional parameters. WAIC and nested sampling give more support to three or four breakpoints, indicating that the data contain structure beyond the simplest three-regime picture. However, the nested-sampling evidence difference between three and four breakpoints is weak. For this reason, the two-breakpoint model remains a useful baseline: it is not the most flexible model, but it captures the main physical regimes with a small number of interpretable parameters.
+
+The Gaussian Process model is the best non-parametric probabilistic alternative. It fits the global curvature of the relation without imposing breakpoints and gives well-calibrated predictive checks. The deterministic neural network and SVR give similarly strong held-out point prediction with compact smooth models, while the Bayesian neural network gives slightly weaker RMSE but stronger predictive calibration. Quantile boosting directly estimates empirical intervals, but in this run those intervals under-cover the held-out scatter. The Random Forest also predicts radii reasonably well on held-out data, but its uncertainty estimate based on tree-to-tree scatter is too narrow. These models are useful as machine-learning benchmarks for prediction, but their uncertainty estimates are less reliable than the main Bayesian and GP approaches.
+
+Overall, the Bayesian broken-power-law model is the most appropriate choice when interpretability, extrapolation, and calibrated uncertainties are important. The GP and BNN are valuable when flexibility is preferred and a probabilistic regression is acceptable, with the GP remaining more transparent for this one-dimensional problem. SVR and the deterministic neural network are useful for smooth point prediction, while Random Forests and quantile boosting add empirical machine-learning baselines. They should not be used as the main uncertainty models without additional calibration.
+
+\printbibliography
+
+\end{document}

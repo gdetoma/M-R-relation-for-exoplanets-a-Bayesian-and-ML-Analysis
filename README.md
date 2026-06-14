@@ -1,97 +1,90 @@
 # Exoplanet Mass-Radius Relation: Bayesian and ML Analysis
 
-This repository contains a comparative analysis of the exoplanet mass-radius
-relation using Bayesian inference and machine-learning methods.
-
-The models fit the relation in log space:
+This project compares Bayesian inference and machine-learning approaches for
+modelling the exoplanet mass-radius relation. Models are fitted in log space:
 
 ```text
 log10(R / R_earth) = f(log10(M / M_earth))
 ```
 
-The analysis uses cleaned DACE exoplanet data with measured masses, radii, and
-measurement uncertainties. The main goal is to compare physically interpretable
-Bayesian broken-power-law models with more flexible Gaussian Process and Random
-Forest regressions.
+The analyses use measured masses, radii, and their uncertainties from a cleaned
+DACE exoplanet catalogue. The project includes interpretable broken-power-law
+models alongside flexible regression methods and evaluates both predictive
+accuracy and uncertainty coverage.
 
-## Main Scripts
+## Methods
 
-| File | Purpose |
+| Script | Method |
 | --- | --- |
-| `emcee_M-R.py` | Bayesian piecewise-linear mass-radius model sampled with `emcee`; compares 1-4 breakpoints using BIC, WAIC, and posterior predictive checks. |
-| `dynesty_M-R.py` | Nested-sampling version of the same piecewise-linear model using `dynesty`; compares breakpoint models with Bayesian evidence. |
-| `gp_M-R.py` | Gaussian Process regression of the mass-radius relation with heteroscedastic radius errors and propagated mass errors. |
-| `rf_M-R.py` | Random Forest regression with train/test hyperparameter comparison and tree-to-tree spread as an uncertainty proxy. |
+| `emcee_M-R.py` | Bayesian continuous broken-power-law model sampled with `emcee`; compares 1-4 breakpoints using BIC, WAIC, and posterior predictive checks. |
+| `dynesty_M-R.py` | Nested-sampling version of the broken-power-law model; compares breakpoint models using Bayesian evidence. |
+| `gp_M-R.py` | Gaussian Process regression with heteroscedastic radius errors and propagated mass errors. |
+| `rf_M-R.py` | Random Forest regression with configurable smoothness and tree-to-tree spread as an uncertainty proxy. |
+| `qboost_svr_M-R.py` | Quantile Gradient Boosting and Support Vector Regression comparison. |
+| `nn_bnn_M-R.py` | Neural Network and variational Bayesian Neural Network comparison. |
+| `compare_ML_methods_M-R.py` | Runs the main ML methods on one shared train/test split and compares their metrics. |
+
+The accompanying report source is in `MR_methods_report.tex`. Earlier
+exploratory implementations are retained in `old_files/`.
 
 ## Data
 
-The scripts expect the DACE catalogue file to be available as:
+Place the cleaned DACE catalogue at:
 
 ```text
 DACE_Exo.csv
 ```
 
-in the same directory as the Python scripts. The data file is not required to be
-tracked in git; if it is not present, download or place it manually before
-running the analyses.
+in the repository root. Catalogue files and generated outputs are intentionally
+not tracked in Git.
 
-## Environment
+## Installation
 
-A typical Python environment needs:
-
-```bash
-pip install numpy pandas matplotlib scipy emcee corner dynesty scikit-learn
-```
-
-If you use a virtual environment:
+Python 3.11 or newer is recommended.
 
 ```bash
-python -m venv ML-venv
-source ML-venv/bin/activate
-pip install numpy pandas matplotlib scipy emcee corner dynesty scikit-learn
+git clone https://github.com/gdetoma/M-R-relation-for-exoplanets-a-Bayesian-and-ML-Analysis.git
+cd M-R-relation-for-exoplanets-a-Bayesian-and-ML-Analysis
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ## Usage
 
-Run the MCMC Bayesian analysis:
+Each script supports `--help` for its full set of options. Common runs are:
 
 ```bash
-python emcee_M-R.py --compare --breakpoints 2 --prior broad
-```
-
-Run the nested-sampling evidence comparison:
-
-```bash
+# Compare Bayesian broken-power-law models
+python emcee_M-R.py --compare --prior broad
 python dynesty_M-R.py --compare --prior broad
-```
 
-Run the Gaussian Process kernel comparison:
-
-```bash
+# Compare Gaussian Process kernels and Random Forest configurations
 python gp_M-R.py --compare
-```
-
-Run the Random Forest hyperparameter comparison:
-
-```bash
 python rf_M-R.py --compare
+
+# Run the additional ML models
+python qboost_svr_M-R.py
+python nn_bnn_M-R.py
+
+# Evaluate the main ML methods on a shared split
+python compare_ML_methods_M-R.py
 ```
 
-All scripts write summaries, diagnostic CSV files, and figures to:
-
-```text
-plots/
-```
+The Bayesian and neural-network analyses can take considerably longer than the
+other methods. Use each script's sampling, epoch, or `--max-points` options for
+quicker exploratory runs.
 
 ## Outputs
 
-The analyses produce:
+Scripts write figures, summary tables, predictions, and diagnostics to
+`plots/`. Depending on the method, outputs include:
 
-- Fit figures in log mass-log radius space.
-- Posterior or predictive uncertainty bands.
-- Posterior predictive checks.
-- Residual coverage tables.
-- Model-comparison tables for breakpoint, kernel, or hyperparameter choices.
+- fits and predictive uncertainty bands;
+- posterior predictive checks and residual coverage tables;
+- model-comparison tables for breakpoints, kernels, and hyperparameters;
+- train/test metrics and predicted-versus-observed figures;
+- MCMC trace and corner plots.
 
 ## Notes
 
@@ -99,5 +92,6 @@ The analyses produce:
   uncertainty, and intrinsic scatter.
 - The Gaussian Process uses a global white-noise term as an intrinsic-scatter
   proxy.
-- The Random Forest tree spread is only a practical uncertainty proxy and is not
-  a calibrated Bayesian predictive interval.
+- Random Forest tree spread is a practical uncertainty proxy, not a calibrated
+  Bayesian predictive interval.
+- Reproducible random seeds are exposed through the command-line interfaces.
