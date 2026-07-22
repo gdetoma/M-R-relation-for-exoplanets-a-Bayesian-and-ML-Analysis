@@ -24,12 +24,14 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit, train_test_split
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLOT_DIR = SCRIPT_DIR / "plots"
 EMCEE_SCRIPT = SCRIPT_DIR / "emcee_M-R.py"
+MASS_REGIME_BREAKPOINTS = (0.824, 2.196)
+MASS_REGIME_NAMES = ("low_mass", "intermediate_mass", "giant_planet")
 
 
 def load_mass_radius_module():
@@ -82,19 +84,56 @@ def training_weights(df: pd.DataFrame, error_floor: float) -> np.ndarray:
     return weights / np.median(weights)
 
 
+def mass_regime_codes(df: pd.DataFrame) -> np.ndarray:
+    """Return low/intermediate/giant regime codes from Bayesian breakpoints."""
+    return np.digitize(df["log_mass"].to_numpy(), MASS_REGIME_BREAKPOINTS)
+
+
+def add_mass_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a readable mass-regime label used for stratified splitting."""
+    with_regime = df.copy()
+    codes = mass_regime_codes(with_regime)
+    with_regime["mass_regime"] = [MASS_REGIME_NAMES[code] for code in codes]
+    return with_regime
+
+
+def regime_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Count rows in the three mass regimes."""
+    codes = mass_regime_codes(df)
+    return {
+        name: int(np.sum(codes == index))
+        for index, name in enumerate(MASS_REGIME_NAMES)
+    }
+
+
+def format_regime_counts(df: pd.DataFrame) -> str:
+    counts = regime_counts(df)
+    return ", ".join(f"{name}={counts[name]}" for name in MASS_REGIME_NAMES)
+
+
 def split_train_test(
     df: pd.DataFrame,
     test_size: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Make a reproducible train/test split after sorting the cleaned data."""
+    """Make a reproducible mass-regime-stratified train/test split."""
+    df = add_mass_regime(df)
     indices = np.arange(len(df))
-    train_idx, test_idx = train_test_split(
-        indices,
-        test_size=test_size,
-        random_state=seed,
-        shuffle=True,
-    )
+    regimes = mass_regime_codes(df)
+    if np.min(np.bincount(regimes, minlength=len(MASS_REGIME_NAMES))) >= 2:
+        splitter = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=test_size,
+            random_state=seed,
+        )
+        train_idx, test_idx = next(splitter.split(indices, regimes))
+    else:
+        train_idx, test_idx = train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=seed,
+            shuffle=True,
+        )
     train_df = df.iloc[train_idx].sort_values("mass").reset_index(drop=True)
     test_df = df.iloc[test_idx].sort_values("mass").reset_index(drop=True)
     return train_df, test_df
@@ -203,6 +242,13 @@ def residual_coverage_check(
         {
             "mass": df["mass"].to_numpy(),
             "radius": df["radius"].to_numpy(),
+            "mass_regime": df.get(
+                "mass_regime",
+                pd.Series(
+                    [MASS_REGIME_NAMES[code] for code in mass_regime_codes(df)],
+                    index=df.index,
+                ),
+            ).to_numpy(),
             "log_mass": x,
             "log_radius": y,
             "fitted_log_radius": fitted_y,
@@ -257,6 +303,22 @@ def posterior_predictive_pte(
     return float(np.mean(t_rep >= t_data)), t_rep, t_data
 
 
+def rmse_with_se(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
+    """Return RMSE and a delta-method standard error for the RMSE."""
+    residual = y_true - y_pred
+    squared_error = residual**2
+    rmse = float(np.sqrt(np.mean(squared_error)))
+    if len(squared_error) > 1 and rmse > 0:
+        rmse_se = float(
+            np.std(squared_error, ddof=1)
+            / np.sqrt(len(squared_error))
+            / (2.0 * rmse)
+        )
+    else:
+        rmse_se = 0.0
+    return rmse, rmse_se
+
+
 def fit_metrics(
     df: pd.DataFrame,
     fit: RandomForestFit,
@@ -266,12 +328,7 @@ def fit_metrics(
     y = df["log_radius"].to_numpy()
     pred, _ = predict_forest(fit, df["log_mass"].to_numpy())
     residual = y - pred
-    squared_error = residual**2
-    rmse = float(np.sqrt(np.mean(squared_error)))
-    if len(squared_error) > 1 and rmse > 0:
-        rmse_se = float(np.std(squared_error, ddof=1) / np.sqrt(len(squared_error)) / (2.0 * rmse))
-    else:
-        rmse_se = 0.0
+    rmse, rmse_se = rmse_with_se(y, pred)
     ss_res = float(np.sum(residual**2))
     ss_tot = float(np.sum((y - np.mean(y)) ** 2))
 
@@ -282,17 +339,22 @@ def fit_metrics(
         "r2": float(r2_score(y, pred)),
         "manual_r2": float(1.0 - ss_res / ss_tot),
         "oob_rmse": np.nan,
+        "oob_rmse_se": np.nan,
         "oob_mae": np.nan,
         "oob_r2": np.nan,
+        "oob_n": 0.0,
     }
 
     if include_oob and hasattr(fit.model, "oob_prediction_"):
         oob_pred = np.asarray(fit.model.oob_prediction_)
         valid = np.isfinite(oob_pred)
         if np.any(valid):
-            metrics["oob_rmse"] = float(np.sqrt(mean_squared_error(y[valid], oob_pred[valid])))
+            oob_rmse, oob_rmse_se = rmse_with_se(y[valid], oob_pred[valid])
+            metrics["oob_rmse"] = oob_rmse
+            metrics["oob_rmse_se"] = oob_rmse_se
             metrics["oob_mae"] = float(mean_absolute_error(y[valid], oob_pred[valid]))
             metrics["oob_r2"] = float(r2_score(y[valid], oob_pred[valid]))
+            metrics["oob_n"] = float(np.sum(valid))
 
     return metrics
 
@@ -311,6 +373,11 @@ def summarize_fit(
     params = fit.model.get_params()
     rows = [
         {"quantity": "label", "value": fit.label},
+        {"quantity": "split_strategy", "value": "mass_regime_stratified"},
+        {
+            "quantity": "mass_regime_breakpoints_log_mass",
+            "value": ",".join(str(value) for value in MASS_REGIME_BREAKPOINTS),
+        },
         {"quantity": "n_train", "value": len(train_df)},
         {"quantity": "n_test", "value": len(test_df)},
         {"quantity": "test_size", "value": test_size},
@@ -323,6 +390,10 @@ def summarize_fit(
         {"quantity": "error_floor", "value": fit.error_floor},
         {"quantity": "ppd_pte", "value": ppd_pte},
     ]
+    for name, count in regime_counts(train_df).items():
+        rows.append({"quantity": f"train_n_{name}", "value": count})
+    for name, count in regime_counts(test_df).items():
+        rows.append({"quantity": f"test_n_{name}", "value": count})
     for key, value in train_metrics.items():
         rows.append({"quantity": f"train_{key}", "value": value})
     for key, value in test_metrics.items():
@@ -443,6 +514,11 @@ def run_analysis(
     train_df, test_df = split_train_test(df, test_size=test_size, seed=seed)
     print(f"\n=== Random forest: {label} ===")
     print(f"Using {len(train_df)} training planets and {len(test_df)} test planets.")
+    print(
+        "Mass-regime counts: "
+        f"train({format_regime_counts(train_df)}), "
+        f"test({format_regime_counts(test_df)})"
+    )
 
     fit = fit_random_forest(
         df=train_df,
@@ -496,6 +572,8 @@ def run_analysis(
         "label": label,
         "n_train": len(train_df),
         "n_test": len(test_df),
+        "train_regime_counts": format_regime_counts(train_df),
+        "test_regime_counts": format_regime_counts(test_df),
         "n_estimators": n_estimators,
         "max_depth": max_depth,
         "min_samples_leaf": min_samples_leaf,
@@ -516,7 +594,7 @@ def run_analysis(
 
 
 def comparison_configs() -> list[dict[str, object]]:
-    """Forest smoothness settings to compare by held-out test RMSE."""
+    """Forest smoothness settings to compare by training-set OOB RMSE."""
     return [
         {"label": "ultra_smooth", "max_depth": 2, "min_samples_leaf": 40, "max_samples": 0.6},
         {"label": "very_smooth", "max_depth": 3, "min_samples_leaf": 30, "max_samples": 0.7},
@@ -553,25 +631,68 @@ def smoothness_sort_columns(comparison: pd.DataFrame) -> pd.DataFrame:
     return ranked
 
 
+def run_oob_candidate(
+    train_df: pd.DataFrame,
+    n_estimators: int,
+    max_depth: int | None,
+    min_samples_leaf: int,
+    max_features: float | int | str | None,
+    max_samples: float | int | None,
+    seed: int,
+    use_sample_weights: bool,
+    error_floor: float,
+    label: str,
+) -> dict[str, float | str | int | None]:
+    """Fit one candidate on training data and report OOB diagnostics only."""
+    fit = fit_random_forest(
+        df=train_df,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        max_samples=max_samples,
+        seed=seed,
+        use_sample_weights=use_sample_weights,
+        error_floor=error_floor,
+        oob_score=True,
+        label=label,
+    )
+    train_metrics = fit_metrics(train_df, fit, include_oob=True)
+    return {
+        "label": label,
+        "n_train": len(train_df),
+        "n_estimators": n_estimators,
+        "max_depth": max_depth,
+        "min_samples_leaf": min_samples_leaf,
+        "max_features": max_features,
+        "max_samples": max_samples,
+        "use_sample_weights": use_sample_weights,
+        "error_floor": error_floor,
+        **{f"train_{key}": value for key, value in train_metrics.items()},
+    }
+
+
 def select_comparison_model(
     comparison: pd.DataFrame,
     selection_rule: str,
     rmse_tolerance: float,
 ) -> tuple[pd.Series, float]:
-    """Select the reported model from the comparison table."""
-    ordered = comparison.sort_values(["test_rmse", "test_mae"]).reset_index(drop=True)
+    """Select the reported model from training-set OOB diagnostics."""
+    metric = "train_oob_rmse"
+    metric_se = "train_oob_rmse_se"
+    ordered = comparison.sort_values([metric, "train_oob_mae"]).reset_index(drop=True)
     best = ordered.iloc[0]
 
     if selection_rule == "best-rmse":
-        threshold = float(best["test_rmse"])
+        threshold = float(best[metric])
     elif selection_rule == "one-se":
-        threshold = float(best["test_rmse"] + best["test_rmse_se"])
+        threshold = float(best[metric] + best[metric_se])
     elif selection_rule == "rmse-tolerance":
-        threshold = float(best["test_rmse"] + rmse_tolerance)
+        threshold = float(best[metric] + rmse_tolerance)
     else:
         raise ValueError(f"Unknown selection rule: {selection_rule}")
 
-    candidates = ordered[ordered["test_rmse"] <= threshold]
+    candidates = ordered[ordered[metric] <= threshold]
     if selection_rule == "best-rmse":
         selected = candidates.iloc[0]
     else:
@@ -582,8 +703,8 @@ def select_comparison_model(
                     "_depth_rank",
                     "_leaf_rank",
                     "_sample_rank",
-                    "test_rmse",
-                    "test_mae",
+                    metric,
+                    "train_oob_mae",
                 ]
             )
             .iloc[0]
@@ -608,7 +729,7 @@ def main() -> None:
         "--selection-rule",
         choices=("one-se", "best-rmse", "rmse-tolerance"),
         default="one-se",
-        help="model-selection rule used after the hyperparameter scan",
+        help="model-selection rule used on training-set OOB RMSE",
     )
     parser.add_argument(
         "--rmse-tolerance",
@@ -648,24 +769,40 @@ def main() -> None:
     }
 
     if args.compare:
+        if args.no_oob:
+            raise ValueError("--compare requires OOB scoring; remove --no-oob.")
+
+        df = MR.prepare_fit_data(raw_df)
+        train_df, test_df = split_train_test(df, test_size=args.test_size, seed=args.seed)
+        print(
+            "OOB model selection uses only the stratified training split: "
+            f"{len(train_df)} training planets, {len(test_df)} untouched test planets."
+        )
+        print(
+            "Mass-regime counts: "
+            f"train({format_regime_counts(train_df)}), "
+            f"test({format_regime_counts(test_df)})"
+        )
+
         rows = []
         for config in comparison_configs():
-            prefix = f"rf_mass_radius_{config['label']}"
             rows.append(
-                run_analysis(
-                    **common,
+                run_oob_candidate(
+                    train_df=train_df,
+                    n_estimators=args.n_estimators,
                     max_depth=config["max_depth"],
                     min_samples_leaf=config["min_samples_leaf"],
+                    max_features=args.max_features,
                     max_samples=config["max_samples"],
-                    output_prefix=prefix,
+                    seed=args.seed,
+                    use_sample_weights=not args.no_sample_weights,
+                    error_floor=args.error_floor,
                     label=config["label"],
-                    make_plots=True,
-                    show=False,
                 )
             )
 
         comparison = pd.DataFrame(rows)
-        comparison = comparison.sort_values(["test_rmse", "test_mae"]).reset_index(drop=True)
+        comparison = comparison.sort_values(["train_oob_rmse", "train_oob_mae"]).reset_index(drop=True)
         selected, threshold = select_comparison_model(
             comparison,
             selection_rule=args.selection_rule,
@@ -673,7 +810,9 @@ def main() -> None:
         )
         comparison["selected"] = comparison["label"].eq(selected["label"])
         comparison_path = PLOT_DIR / "rf_mass_radius_model_comparison.csv"
+        selection_path = PLOT_DIR / "rf_mass_radius_model_selection.csv"
         comparison.to_csv(comparison_path, index=False)
+        comparison.to_csv(selection_path, index=False)
         best = comparison.iloc[0]
         best_config = next(
             config for config in comparison_configs() if config["label"] == selected["label"]
@@ -687,28 +826,24 @@ def main() -> None:
                     "min_samples_leaf",
                     "max_samples",
                     "train_rmse",
-                    "test_rmse",
-                    "test_rmse_se",
                     "train_oob_rmse",
-                    "test_r2",
-                    "ppd_pte",
-                    "fraction_within_1sigma",
-                    "fraction_within_2sigma",
+                    "train_oob_rmse_se",
+                    "train_oob_r2",
                     "selected",
                 ]
             ].to_string(index=False)
         )
         print(
-            "Best held-out test RMSE: "
-            f"{best['label']} with test_RMSE = {best['test_rmse']:.4f}"
+            "Best training-set OOB RMSE: "
+            f"{best['label']} with OOB_RMSE = {best['train_oob_rmse']:.4f}"
         )
         print(
             "Selected model: "
             f"{selected['label']} using {args.selection_rule} "
-            f"(test_RMSE <= {threshold:.4f})"
+            f"(OOB_RMSE <= {threshold:.4f})"
         )
-        print(f"Saved comparison table to {comparison_path}")
-        print("Saving selected model outputs under prefix rf_mass_radius_best.")
+        print(f"Saved OOB model-selection tables to {comparison_path} and {selection_path}")
+        print("Evaluating the selected model once on the untouched test set.")
         run_analysis(
             **common,
             max_depth=best_config["max_depth"],

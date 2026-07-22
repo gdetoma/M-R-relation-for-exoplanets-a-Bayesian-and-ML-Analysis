@@ -721,14 +721,37 @@ def posterior_predictive_observations(
 
 
 def breakpoint_intervals(chain: np.ndarray) -> np.ndarray:
-    """Return 16th, 50th, and 84th percentiles for each breakpoint."""
+    """Return 2.5th, 16th, 50th, 84th, and 97.5th percentiles for each breakpoint."""
     n_segments = n_segments_from_theta(chain[0])
     n_breakpoints = n_segments - 1
     if n_breakpoints == 0:
-        return np.empty((3, 0))
+        return np.empty((5, 0))
     break_start = 1 + n_segments
     break_samples = chain[:, break_start : break_start + n_breakpoints]
-    return np.percentile(break_samples, [16, 50, 84], axis=0)
+    return np.percentile(break_samples, [2.5, 16, 50, 84, 97.5], axis=0)
+
+
+def plot_breakpoint_uncertainty(ax: plt.Axes, chain: np.ndarray) -> None:
+    """Add posterior breakpoint credible intervals to a mass-radius figure."""
+    (
+        breakpoint_q025,
+        breakpoint_q16,
+        breakpoint_q50,
+        breakpoint_q84,
+        breakpoint_q975,
+    ) = breakpoint_intervals(chain)
+    breakpoint_colors = [f"C{i}" for i in range(4, 10)]
+
+    for i, interval in enumerate(
+        zip(breakpoint_q025, breakpoint_q16, breakpoint_q50, breakpoint_q84, breakpoint_q975)
+    ):
+        q025, q16, q50, q84, q975 = interval
+        color = breakpoint_colors[i % len(breakpoint_colors)]
+        label_95 = "95% breakpoint interval" if i == 0 else None
+        label_68 = "68% breakpoint interval" if i == 0 else None
+        ax.axvspan(q025, q975, color=color, alpha=0.10, linewidth=0, label=label_95)
+        ax.axvspan(q16, q84, color=color, alpha=0.24, linewidth=0, label=label_68)
+        ax.axvline(q50, color=color, ls="--", lw=1.4, label=fr"$x_{i + 1}$ median")
 
 
 def plot_fit(
@@ -793,13 +816,7 @@ def plot_fit(
         linewidth=0,
         label="95% mean-relation band",
     )
-    breakpoint_q16, breakpoint_q50, breakpoint_q84 = breakpoint_intervals(chain)
-    breakpoint_colors = [f"C{i}" for i in range(4, 10)]
-    for i, (q16, q50, q84) in enumerate(zip(breakpoint_q16, breakpoint_q50, breakpoint_q84)):
-        color = breakpoint_colors[i % len(breakpoint_colors)]
-        label = "68% breakpoint interval" if i == 0 else None
-        ax.axvspan(q16, q84, color=color, alpha=0.22, linewidth=0, label=label)
-        ax.axvline(q50, color=color, ls="--", lw=1.4, label=fr"$x_{i + 1}$ median")
+    plot_breakpoint_uncertainty(ax, chain)
     ax.set_xlabel(r"$\log_{10}(M/M_\oplus)$")
     ax.set_ylabel(r"$\log_{10}(R/R_\oplus)$")
     ax.set_title("Bayesian radius-mass relation")

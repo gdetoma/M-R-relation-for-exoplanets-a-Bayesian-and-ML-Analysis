@@ -12,6 +12,7 @@ venv/
 plots/
 *.png
 *.pdf
+!ML_Project_Report.pdf
 *.csv
 
 # Notebooks and temporary files
